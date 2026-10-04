@@ -1,0 +1,14 @@
+{
+  "dataset": "primary_dataset4",
+  "total_images": 5,
+  "detected": 5,
+  "correct (IoU>=0.3)": 5,
+  "detection_rate": 100.0,
+  "accuracy (correct/total)": 100.0,
+  "precision": 100.0,
+  "recall": 100.0,
+  "avg_iou": 0.8629,
+  "median_iou": 0.9026,
+  "avg_time_sec": 0.097,
+  "total_time_sec": 0.5
+}

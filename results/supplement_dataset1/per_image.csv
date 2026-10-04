@@ -1,0 +1,6 @@
+name,detected,correct,iou,time
+AN1,True,True,0.8421,0.032
+AN10,True,True,0.8571,0.03
+AN2,True,True,0.7602,0.032
+AN4,True,True,0.8548,0.031
+AN5,True,True,0.9091,0.032
