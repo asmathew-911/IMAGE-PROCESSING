@@ -1,0 +1,815 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>ANPR — Automatic Number Plate Recognition</title>
+  <meta name="description" content="Upload a vehicle image to detect and read the license plate using classical computer vision (OpenCV + OCR)." />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet" />
+  <style>
+    /* ═══════════════════  DESIGN TOKENS  ═══════════════════ */
+    :root {
+      --bg:           #0a0d14;
+      --bg2:          #0f1520;
+      --bg3:          #141c2e;
+      --surface:      #19243a;
+      --surface2:     #1e2d47;
+      --border:       rgba(99, 179, 237, 0.12);
+      --border-glow:  rgba(99, 179, 237, 0.35);
+      --accent:       #3b9eff;
+      --accent2:      #7f5af0;
+      --accent3:      #2cb67d;
+      --danger:       #ff5572;
+      --text:         #e2e8f0;
+      --text2:        #94a3b8;
+      --text3:        #64748b;
+      --plate-bg:     #1a2642;
+      --glow-blue:    0 0 40px rgba(59, 158, 255, 0.3);
+      --glow-green:   0 0 40px rgba(44, 182, 125, 0.3);
+      --transition:   0.28s cubic-bezier(0.4, 0, 0.2, 1);
+    }
+
+    /* ═══════════════════  RESET & BASE  ═══════════════════ */
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    html { scroll-behavior: smooth; }
+
+    body {
+      font-family: 'Outfit', sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      min-height: 100vh;
+      overflow-x: hidden;
+    }
+
+    /* ═══════════════════  ANIMATED GRID BG  ═══════════════════ */
+    body::before {
+      content: '';
+      position: fixed; inset: 0; z-index: 0;
+      background-image:
+        linear-gradient(rgba(59, 158, 255, 0.04) 1px, transparent 1px),
+        linear-gradient(90deg, rgba(59, 158, 255, 0.04) 1px, transparent 1px);
+      background-size: 40px 40px;
+      animation: gridDrift 20s linear infinite;
+      pointer-events: none;
+    }
+
+    @keyframes gridDrift {
+      0%   { background-position: 0 0; }
+      100% { background-position: 40px 40px; }
+    }
+
+    /* Orbs */
+    .orb {
+      position: fixed; border-radius: 50%;
+      filter: blur(80px); opacity: 0.15;
+      pointer-events: none; z-index: 0;
+      animation: float 8s ease-in-out infinite;
+    }
+    .orb-1 { width: 500px; height: 500px; background: var(--accent2); top: -150px; right: -100px; animation-delay: 0s; }
+    .orb-2 { width: 400px; height: 400px; background: var(--accent);  bottom: -100px; left: -80px; animation-delay: -4s; }
+    .orb-3 { width: 300px; height: 300px; background: var(--accent3); top: 40%; left: 50%; animation-delay: -2s; }
+
+    @keyframes float {
+      0%, 100% { transform: translateY(0px) scale(1); }
+      50%       { transform: translateY(-30px) scale(1.05); }
+    }
+
+    /* ═══════════════════  LAYOUT  ═══════════════════ */
+    .wrapper {
+      position: relative; z-index: 1;
+      max-width: 1200px; margin: 0 auto;
+      padding: 0 24px 80px;
+    }
+
+    /* ═══════════════════  HEADER  ═══════════════════ */
+    header {
+      text-align: center;
+      padding: 64px 0 48px;
+    }
+
+    .badge {
+      display: inline-flex; align-items: center; gap: 8px;
+      background: rgba(59, 158, 255, 0.12);
+      border: 1px solid rgba(59, 158, 255, 0.25);
+      border-radius: 99px;
+      padding: 6px 16px;
+      font-size: 12px; font-weight: 600; letter-spacing: 0.1em;
+      text-transform: uppercase; color: var(--accent);
+      margin-bottom: 24px;
+    }
+
+    .badge-dot {
+      width: 7px; height: 7px; border-radius: 50%;
+      background: var(--accent);
+      animation: pulse 2s infinite;
+    }
+
+    @keyframes pulse {
+      0%, 100% { box-shadow: 0 0 0 0 rgba(59, 158, 255, 0.6); }
+      50%       { box-shadow: 0 0 0 8px rgba(59, 158, 255, 0); }
+    }
+
+    h1 {
+      font-size: clamp(2rem, 5vw, 3.6rem);
+      font-weight: 800;
+      line-height: 1.1;
+      letter-spacing: -0.03em;
+      background: linear-gradient(135deg, #fff 30%, var(--accent) 70%, var(--accent2) 100%);
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+      background-clip: text;
+      margin-bottom: 16px;
+    }
+
+    .subtitle {
+      font-size: 1.05rem; color: var(--text2); max-width: 520px; margin: 0 auto;
+      line-height: 1.7;
+    }
+
+    /* ═══════════════════  UPLOAD ZONE  ═══════════════════ */
+    .upload-card {
+      background: var(--surface);
+      border: 2px dashed var(--border);
+      border-radius: 24px;
+      padding: 48px 32px;
+      text-align: center;
+      cursor: pointer;
+      transition: border-color var(--transition), background var(--transition), transform var(--transition), box-shadow var(--transition);
+      position: relative; overflow: hidden;
+    }
+
+    .upload-card::before {
+      content: '';
+      position: absolute; inset: 0;
+      background: radial-gradient(ellipse at 50% 50%, rgba(59, 158, 255, 0.06) 0%, transparent 70%);
+      opacity: 0;
+      transition: opacity var(--transition);
+    }
+
+    .upload-card:hover, .upload-card.drag-over {
+      border-color: var(--accent);
+      background: var(--surface2);
+      transform: translateY(-2px);
+      box-shadow: var(--glow-blue);
+    }
+
+    .upload-card:hover::before, .upload-card.drag-over::before { opacity: 1; }
+
+    #fileInput { display: none; }
+
+    .upload-icon {
+      width: 72px; height: 72px;
+      margin: 0 auto 20px;
+      background: linear-gradient(135deg, rgba(59, 158, 255, 0.15), rgba(127, 90, 240, 0.15));
+      border: 1px solid rgba(59, 158, 255, 0.25);
+      border-radius: 20px;
+      display: flex; align-items: center; justify-content: center;
+      transition: transform var(--transition);
+    }
+
+    .upload-card:hover .upload-icon { transform: scale(1.08) rotate(-3deg); }
+
+    .upload-icon svg { width: 36px; height: 36px; color: var(--accent); }
+
+    .upload-title { font-size: 1.2rem; font-weight: 600; margin-bottom: 8px; }
+    .upload-hint  { font-size: 0.88rem; color: var(--text3); }
+
+    /* preview inside upload zone */
+    #previewContainer { display: none; margin-top: 24px; }
+
+    #previewImg {
+      max-height: 300px; border-radius: 12px;
+      box-shadow: 0 8px 32px rgba(0,0,0,0.4);
+      object-fit: contain;
+    }
+
+    .preview-name {
+      margin-top: 12px; font-size: 0.85rem; color: var(--text2);
+      font-family: 'JetBrains Mono', monospace;
+    }
+
+    /* ═══════════════════  ANALYSE BTN  ═══════════════════ */
+    #analyseBtn {
+      display: block; width: 100%; max-width: 360px;
+      margin: 24px auto 0;
+      padding: 16px 40px;
+      border: none; border-radius: 14px; cursor: pointer;
+      font-family: 'Outfit', sans-serif;
+      font-size: 1rem; font-weight: 700; letter-spacing: 0.04em;
+      color: #fff;
+      background: linear-gradient(135deg, var(--accent) 0%, var(--accent2) 100%);
+      box-shadow: 0 4px 24px rgba(59, 158, 255, 0.35);
+      transition: transform var(--transition), box-shadow var(--transition), opacity var(--transition);
+      opacity: 0; pointer-events: none;
+      position: relative; overflow: hidden;
+    }
+
+    #analyseBtn.visible { opacity: 1; pointer-events: all; }
+
+    #analyseBtn::after {
+      content: '';
+      position: absolute; inset: 0;
+      background: linear-gradient(135deg, rgba(255,255,255,0.15), transparent);
+      opacity: 0; transition: opacity var(--transition);
+    }
+
+    #analyseBtn:hover { transform: translateY(-2px); box-shadow: 0 8px 40px rgba(59, 158, 255, 0.5); }
+    #analyseBtn:hover::after { opacity: 1; }
+    #analyseBtn:active { transform: scale(0.98); }
+    #analyseBtn:disabled { opacity: 0.6; pointer-events: none; }
+
+    /* ═══════════════════  SPINNER / PROGRESS  ═══════════════════ */
+    #progressSection { display: none; margin-top: 40px; }
+
+    .progress-bar-track {
+      width: 100%; height: 4px;
+      background: rgba(255,255,255,0.06);
+      border-radius: 2px; overflow: hidden;
+      margin-bottom: 12px;
+    }
+
+    .progress-bar-fill {
+      height: 100%;
+      background: linear-gradient(90deg, var(--accent), var(--accent2));
+      border-radius: 2px;
+      animation: progressAnim 2s ease-in-out infinite;
+      width: 60%;
+    }
+
+    @keyframes progressAnim {
+      0%   { transform: translateX(-100%); }
+      100% { transform: translateX(200%); }
+    }
+
+    .progress-label {
+      text-align: center; font-size: 0.88rem; color: var(--text2);
+      display: flex; align-items: center; justify-content: center; gap: 8px;
+    }
+
+    .spinner {
+      width: 16px; height: 16px; border-radius: 50%;
+      border: 2px solid rgba(255,255,255,0.1);
+      border-top-color: var(--accent);
+      animation: spin 0.8s linear infinite;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
+
+    /* ═══════════════════  RESULT SECTION  ═══════════════════ */
+    #resultSection { display: none; margin-top: 56px; }
+
+    .section-label {
+      font-size: 0.75rem; font-weight: 700; letter-spacing: 0.14em;
+      text-transform: uppercase; color: var(--text3);
+      margin-bottom: 20px;
+      display: flex; align-items: center; gap: 12px;
+    }
+
+    .section-label::after {
+      content: ''; flex: 1; height: 1px;
+      background: linear-gradient(90deg, var(--border), transparent);
+    }
+
+    /* ── Plate hero card ── */
+    .plate-hero {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 24px;
+      padding: 40px;
+      margin-bottom: 32px;
+      display: flex;
+      align-items: center;
+      gap: 40px;
+      flex-wrap: wrap;
+      position: relative; overflow: hidden;
+    }
+
+    .plate-hero::before {
+      content: '';
+      position: absolute; top: 0; left: 0; right: 0; height: 3px;
+      background: linear-gradient(90deg, var(--accent3), var(--accent), var(--accent2));
+    }
+
+    .plate-status-icon {
+      width: 64px; height: 64px; border-radius: 16px; flex-shrink: 0;
+      display: flex; align-items: center; justify-content: center;
+      font-size: 32px;
+    }
+
+    .plate-status-icon.success { background: rgba(44, 182, 125, 0.12); }
+    .plate-status-icon.failure { background: rgba(255, 85, 114, 0.12); }
+
+    .plate-hero-info { flex: 1; min-width: 220px; }
+
+    .plate-status-label {
+      font-size: 0.82rem; font-weight: 600; letter-spacing: 0.08em;
+      text-transform: uppercase; margin-bottom: 8px;
+    }
+
+    .plate-status-label.success { color: var(--accent3); }
+    .plate-status-label.failure { color: var(--danger); }
+
+    .plate-text-big {
+      font-family: 'JetBrains Mono', monospace;
+      font-size: clamp(2rem, 6vw, 3.5rem);
+      font-weight: 600;
+      letter-spacing: 0.12em;
+      color: #fff;
+      background: var(--plate-bg);
+      display: inline-block;
+      padding: 12px 28px;
+      border-radius: 12px;
+      border: 2px solid rgba(99, 179, 237, 0.2);
+      box-shadow: 0 0 40px rgba(59, 158, 255, 0.12), inset 0 1px 0 rgba(255,255,255,0.06);
+      margin-top: 4px;
+      position: relative;
+    }
+
+    .plate-text-big .bolt {
+      display: block;
+      position: absolute; top: 8px; left: 10px;
+      width: 8px; height: 8px; border-radius: 50%;
+      background: rgba(255,255,255,0.15);
+    }
+
+    .no-text-label {
+      font-size: 1.1rem; color: var(--text2); font-style: italic;
+    }
+
+    .ocr-badge {
+      display: inline-flex; align-items: center; gap: 6px;
+      background: rgba(127, 90, 240, 0.12);
+      border: 1px solid rgba(127, 90, 240, 0.25);
+      border-radius: 99px; padding: 4px 12px;
+      font-size: 0.78rem; font-weight: 600; color: #a78bfa;
+      margin-top: 12px;
+    }
+
+    .plate-crop-panel {
+      display: flex; flex-direction: column; align-items: center; gap: 8px;
+    }
+
+    .plate-crop-panel img {
+      max-width: 260px; max-height: 100px;
+      border-radius: 8px;
+      border: 1px solid var(--border);
+      object-fit: contain;
+    }
+
+    .plate-crop-panel .cap { font-size: 0.78rem; color: var(--text3); }
+
+    /* ── Processing stages grid ── */
+    .stages-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+      gap: 16px;
+    }
+
+    .stage-card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 16px;
+      overflow: hidden;
+      transition: border-color var(--transition), transform var(--transition), box-shadow var(--transition);
+      animation: fadeUp 0.5s both;
+    }
+
+    @keyframes fadeUp {
+      from { opacity: 0; transform: translateY(20px); }
+      to   { opacity: 1; transform: translateY(0); }
+    }
+
+    .stage-card:hover {
+      border-color: var(--border-glow);
+      transform: translateY(-4px);
+      box-shadow: 0 12px 40px rgba(0,0,0,0.4);
+    }
+
+    .stage-img-wrap {
+      background: #000;
+      display: flex; align-items: center; justify-content: center;
+      height: 200px; overflow: hidden;
+      cursor: pointer;
+    }
+
+    .stage-img-wrap img {
+      width: 100%; height: 100%; object-fit: contain;
+      transition: transform 0.4s ease;
+    }
+
+    .stage-img-wrap:hover img { transform: scale(1.04); }
+
+    .stage-label {
+      padding: 12px 16px;
+      font-size: 0.82rem; font-weight: 500; color: var(--text2);
+      background: var(--surface2);
+      border-top: 1px solid var(--border);
+      font-family: 'JetBrains Mono', monospace;
+      white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    }
+
+    /* ── Lightbox ── */
+    #lightbox {
+      position: fixed; inset: 0; z-index: 1000;
+      background: rgba(0,0,0,0.92);
+      display: flex; align-items: center; justify-content: center;
+      opacity: 0; pointer-events: none;
+      transition: opacity 0.25s;
+      backdrop-filter: blur(6px);
+    }
+
+    #lightbox.open { opacity: 1; pointer-events: all; }
+
+    #lightbox img {
+      max-width: 92vw; max-height: 88vh;
+      border-radius: 12px;
+      box-shadow: 0 0 80px rgba(0,0,0,0.8);
+      transform: scale(0.92);
+      transition: transform 0.3s cubic-bezier(0.34, 1.56, 0.64, 1);
+    }
+
+    #lightbox.open img { transform: scale(1); }
+
+    #lightboxClose {
+      position: fixed; top: 24px; right: 28px;
+      background: rgba(255,255,255,0.1);
+      border: 1px solid rgba(255,255,255,0.15);
+      border-radius: 50%; width: 40px; height: 40px;
+      display: flex; align-items: center; justify-content: center;
+      cursor: pointer; font-size: 20px; color: #fff;
+      transition: background var(--transition);
+    }
+
+    #lightboxClose:hover { background: rgba(255,255,255,0.2); }
+
+    #lightboxCaption {
+      position: fixed; bottom: 32px; left: 50%; transform: translateX(-50%);
+      background: rgba(0,0,0,0.7); border: 1px solid rgba(255,255,255,0.1);
+      border-radius: 99px; padding: 8px 20px;
+      font-size: 0.84rem; color: var(--text2);
+      font-family: 'JetBrains Mono', monospace;
+      white-space: nowrap;
+    }
+
+    /* ═══════════════════  ERROR CARD  ═══════════════════ */
+    .error-card {
+      background: rgba(255, 85, 114, 0.07);
+      border: 1px solid rgba(255, 85, 114, 0.25);
+      border-radius: 16px;
+      padding: 24px 28px;
+      display: flex; align-items: flex-start; gap: 16px;
+      margin-top: 32px;
+    }
+
+    .error-icon { font-size: 24px; flex-shrink: 0; margin-top: 2px; }
+    .error-msg  { font-size: 0.9rem; color: #ffa0b0; line-height: 1.6; }
+    .error-title{ font-weight: 600; color: var(--danger); margin-bottom: 4px; }
+
+    /* ═══════════════════  FOOTER  ═══════════════════ */
+    footer {
+      text-align: center;
+      padding: 32px 0;
+      font-size: 0.8rem; color: var(--text3);
+      border-top: 1px solid var(--border);
+      margin-top: 80px;
+    }
+
+    footer span { color: var(--text2); }
+
+    /* ═══════════════════  RESPONSIVENESS  ═══════════════════ */
+    @media (max-width: 640px) {
+      .plate-hero { flex-direction: column; text-align: center; }
+      .plate-hero-info { min-width: unset; }
+      .stages-grid { grid-template-columns: 1fr; }
+    }
+  </style>
+</head>
+<body>
+
+<div class="orb orb-1"></div>
+<div class="orb orb-2"></div>
+<div class="orb orb-3"></div>
+
+<div class="wrapper">
+
+  <!-- ═══  HEADER  ═══ -->
+  <header>
+    <div class="badge"><span class="badge-dot"></span> Classical CV · No Deep Learning Detection</div>
+    <h1>Automatic Number Plate<br>Recognition</h1>
+    <p class="subtitle">Upload a vehicle photograph. The pipeline detects the license plate region using edge detection &amp; morphology, then reads the characters via OCR.</p>
+  </header>
+
+  <!-- ═══  UPLOAD  ═══ -->
+  <div class="upload-card" id="dropZone" role="button" tabindex="0" aria-label="Upload vehicle image">
+    <input type="file" id="fileInput" accept="image/*" />
+
+    <div class="upload-icon">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M4 17v2a2 2 0 002 2h12a2 2 0 002-2v-2"/>
+        <polyline points="7 9 12 4 17 9"/>
+        <line x1="12" y1="4" x2="12" y2="16"/>
+      </svg>
+    </div>
+
+    <div class="upload-title">Drop your image here</div>
+    <div class="upload-hint">or click to browse — JPG, PNG, WEBP supported</div>
+
+    <div id="previewContainer">
+      <img id="previewImg" alt="Preview" />
+      <div class="preview-name" id="previewName"></div>
+    </div>
+  </div>
+
+  <button id="analyseBtn">🔍 Analyse Plate</button>
+
+  <!-- ═══  PROGRESS  ═══ -->
+  <div id="progressSection">
+    <div class="progress-bar-track"><div class="progress-bar-fill"></div></div>
+    <div class="progress-label">
+      <div class="spinner"></div>
+      <span id="progressText">Initialising pipeline…</span>
+    </div>
+  </div>
+
+  <!-- ═══  RESULT  ═══ -->
+  <div id="resultSection">
+
+    <div class="section-label">Detection Result</div>
+
+    <div class="plate-hero" id="plateHero">
+      <div class="plate-status-icon" id="statusIcon"></div>
+      <div class="plate-hero-info">
+        <div class="plate-status-label" id="statusLabel"></div>
+        <div id="plateTextWrap"></div>
+        <div class="ocr-badge" id="ocrBadge"></div>
+      </div>
+      <div class="plate-crop-panel" id="plateCropPanel"></div>
+    </div>
+
+    <div class="section-label">Processing Pipeline  <small style="font-size:.7rem;margin-left:4px;">(click to enlarge)</small></div>
+    <div class="stages-grid" id="stagesGrid"></div>
+
+  </div>
+
+  <!-- ═══  ERROR  ═══ -->
+  <div id="errorSection" style="display:none;"></div>
+
+</div>
+
+<!-- Lightbox -->
+<div id="lightbox">
+  <div id="lightboxClose" role="button" tabindex="0" aria-label="Close">✕</div>
+  <img id="lightboxImg" src="" alt="" />
+  <div id="lightboxCaption"></div>
+</div>
+
+<!-- ═══  FOOTER  ═══ -->
+<footer>
+  ANPR — SEM-5 Image Processing Project · Classical CV pipeline ·
+  <span>OpenCV + EasyOCR</span>
+</footer>
+
+<script>
+// ──────────────────────────────────────────────────────────
+//  STATE
+// ──────────────────────────────────────────────────────────
+let selectedFile = null;
+
+// ──────────────────────────────────────────────────────────
+//  UPLOAD / DROP ZONE
+// ──────────────────────────────────────────────────────────
+const dropZone   = document.getElementById('dropZone');
+const fileInput  = document.getElementById('fileInput');
+const previewCon = document.getElementById('previewContainer');
+const previewImg = document.getElementById('previewImg');
+const previewName= document.getElementById('previewName');
+const analyseBtn = document.getElementById('analyseBtn');
+
+dropZone.addEventListener('click', () => fileInput.click());
+
+dropZone.addEventListener('keydown', e => {
+  if (e.key === 'Enter' || e.key === ' ') fileInput.click();
+});
+
+dropZone.addEventListener('dragover', e => {
+  e.preventDefault();
+  dropZone.classList.add('drag-over');
+});
+
+dropZone.addEventListener('dragleave', () => dropZone.classList.remove('drag-over'));
+
+dropZone.addEventListener('drop', e => {
+  e.preventDefault();
+  dropZone.classList.remove('drag-over');
+  const f = e.dataTransfer.files[0];
+  if (f && f.type.startsWith('image/')) loadFile(f);
+});
+
+fileInput.addEventListener('change', () => {
+  if (fileInput.files[0]) loadFile(fileInput.files[0]);
+});
+
+function loadFile(file) {
+  selectedFile = file;
+  const url = URL.createObjectURL(file);
+  previewImg.src = url;
+  previewName.textContent = file.name;
+  previewCon.style.display = 'block';
+  analyseBtn.classList.add('visible');
+
+  // hide previous results
+  document.getElementById('resultSection').style.display = 'none';
+  document.getElementById('errorSection').style.display  = 'none';
+  document.getElementById('progressSection').style.display = 'none';
+}
+
+// ──────────────────────────────────────────────────────────
+//  ANALYSE
+// ──────────────────────────────────────────────────────────
+const progressSteps = [
+  'Preprocessing image…',
+  'Enhancing contrast (CLAHE)…',
+  'Detecting edges (Canny)…',
+  'Morphological closing…',
+  'Grouping character blobs…',
+  'Running OCR engine…',
+  'Finalising results…',
+];
+let progressTimer = null;
+
+analyseBtn.addEventListener('click', async () => {
+  if (!selectedFile) return;
+
+  // reset UI
+  document.getElementById('resultSection').style.display = 'none';
+  document.getElementById('errorSection').style.display  = 'none';
+  analyseBtn.disabled = true;
+
+  // show progress
+  const progressSection = document.getElementById('progressSection');
+  const progressText    = document.getElementById('progressText');
+  progressSection.style.display = 'block';
+
+  let step = 0;
+  progressText.textContent = progressSteps[0];
+  progressTimer = setInterval(() => {
+    step = (step + 1) % progressSteps.length;
+    progressText.textContent = progressSteps[step];
+  }, 700);
+
+  try {
+    const formData = new FormData();
+    formData.append('image', selectedFile);
+
+    const res = await fetch('/process', { method: 'POST', body: formData });
+    const data = await res.json();
+
+    clearInterval(progressTimer);
+    progressSection.style.display = 'none';
+    analyseBtn.disabled = false;
+
+    if (data.error) {
+      showError(data.error);
+    } else {
+      showResult(data);
+    }
+  } catch (err) {
+    clearInterval(progressTimer);
+    progressSection.style.display = 'none';
+    analyseBtn.disabled = false;
+    showError('Network error: ' + err.message);
+  }
+});
+
+// ──────────────────────────────────────────────────────────
+//  RENDER RESULT
+// ──────────────────────────────────────────────────────────
+function showResult(data) {
+  const section = document.getElementById('resultSection');
+  section.style.display = 'block';
+  section.scrollIntoView({ behavior: 'smooth', block: 'start' });
+
+  // ── hero card ──
+  const statusIcon  = document.getElementById('statusIcon');
+  const statusLabel = document.getElementById('statusLabel');
+  const plateWrap   = document.getElementById('plateTextWrap');
+  const ocrBadge    = document.getElementById('ocrBadge');
+  const cropPanel   = document.getElementById('plateCropPanel');
+
+  if (data.detected) {
+    statusIcon.textContent = '✅';
+    statusIcon.className   = 'plate-status-icon success';
+    statusLabel.textContent= 'Plate Detected';
+    statusLabel.className  = 'plate-status-label success';
+
+    if (data.plate_text) {
+      plateWrap.innerHTML = `<div class="plate-text-big"><span class="bolt"></span>${escHtml(data.plate_text)}</div>`;
+    } else {
+      plateWrap.innerHTML = `<div class="no-text-label">Plate detected — OCR returned no text</div>`;
+    }
+
+    const engineLabel = {
+      easyocr:  '🧠 EasyOCR (Deep Learning)',
+      tesseract:'📖 Tesseract LSTM',
+      template: '🔲 Template Matching',
+      none:     '⚙️ OCR Disabled',
+    }[data.ocr_engine] || data.ocr_engine;
+    ocrBadge.textContent = engineLabel;
+
+    if (data.plate_image) {
+      cropPanel.innerHTML = `
+        <img src="${data.plate_image}" alt="Plate crop" />
+        <span class="cap">Cropped plate region</span>
+      `;
+    } else {
+      cropPanel.innerHTML = '';
+    }
+  } else {
+    statusIcon.textContent = '❌';
+    statusIcon.className   = 'plate-status-icon failure';
+    statusLabel.textContent= 'No Plate Detected';
+    statusLabel.className  = 'plate-status-label failure';
+    plateWrap.innerHTML    = `<div class="no-text-label">The pipeline could not locate a license plate in this image. Try a clearer photo with the plate in frame.</div>`;
+    ocrBadge.textContent   = '';
+    cropPanel.innerHTML    = '';
+  }
+
+  // ── stages ──
+  const grid = document.getElementById('stagesGrid');
+  grid.innerHTML = '';
+  (data.stages || []).forEach((s, i) => {
+    if (!s.img) return;
+    const card = document.createElement('div');
+    card.className = 'stage-card';
+    card.style.animationDelay = `${i * 60}ms`;
+    card.innerHTML = `
+      <div class="stage-img-wrap" data-src="${s.img}" data-label="${escHtml(s.label)}" role="button" tabindex="0" aria-label="Enlarge ${escHtml(s.label)}">
+        <img src="${s.img}" alt="${escHtml(s.label)}" loading="lazy" />
+      </div>
+      <div class="stage-label">${escHtml(s.label)}</div>
+    `;
+    grid.appendChild(card);
+  });
+
+  // bind lightbox
+  grid.querySelectorAll('.stage-img-wrap').forEach(el => {
+    el.addEventListener('click', () => openLightbox(el.dataset.src, el.dataset.label));
+    el.addEventListener('keydown', e => { if (e.key === 'Enter') openLightbox(el.dataset.src, el.dataset.label); });
+  });
+}
+
+// ──────────────────────────────────────────────────────────
+//  ERROR
+// ──────────────────────────────────────────────────────────
+function showError(msg) {
+  const el = document.getElementById('errorSection');
+  el.style.display = 'block';
+  el.innerHTML = `
+    <div class="error-card">
+      <div class="error-icon">⚠️</div>
+      <div>
+        <div class="error-title">Processing Failed</div>
+        <div class="error-msg">${escHtml(msg)}</div>
+      </div>
+    </div>
+  `;
+  el.scrollIntoView({ behavior: 'smooth' });
+}
+
+// ──────────────────────────────────────────────────────────
+//  LIGHTBOX
+// ──────────────────────────────────────────────────────────
+const lightbox     = document.getElementById('lightbox');
+const lightboxImg  = document.getElementById('lightboxImg');
+const lightboxCap  = document.getElementById('lightboxCaption');
+const lightboxClose= document.getElementById('lightboxClose');
+
+function openLightbox(src, caption) {
+  lightboxImg.src = src;
+  lightboxCap.textContent = caption;
+  lightbox.classList.add('open');
+  document.body.style.overflow = 'hidden';
+}
+
+function closeLightbox() {
+  lightbox.classList.remove('open');
+  document.body.style.overflow = '';
+}
+
+lightboxClose.addEventListener('click',  closeLightbox);
+lightboxClose.addEventListener('keydown', e => { if (e.key === 'Enter') closeLightbox(); });
+lightbox.addEventListener('click', e => { if (e.target === lightbox) closeLightbox(); });
+document.addEventListener('keydown', e => { if (e.key === 'Escape') closeLightbox(); });
+
+// ──────────────────────────────────────────────────────────
+//  UTILITY
+// ──────────────────────────────────────────────────────────
+function escHtml(s) {
+  return String(s)
+    .replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')
+    .replace(/"/g,'&quot;');
+}
+</script>
+</body>
+</html>
