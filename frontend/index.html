@@ -4,7 +4,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>ANPR — Automatic Number Plate Recognition</title>
-  <meta name="description" content="Upload a vehicle image to detect and read the license plate using classical computer vision (OpenCV + OCR)." />
+  <meta name="description" content="Upload a vehicle image to detect and read the license plate using purely classical computer vision (OpenCV) — no AI or deep learning." />
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet" />
   <style>
@@ -710,9 +710,7 @@ function showResult(data) {
     }
 
     const engineLabel = {
-      easyocr:  '🧠 EasyOCR (Deep Learning)',
-      tesseract:'📖 Tesseract LSTM',
-      template: '🔲 Template Matching',
+      template: '🔲 Template Matching (Classical CV)',
       none:     '⚙️ OCR Disabled',
     }[data.ocr_engine] || data.ocr_engine;
     ocrBadge.textContent = engineLabel;

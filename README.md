@@ -8,7 +8,7 @@ This repository contains the codebase and case study evaluation for **Question 1
 
 ## Overview
 
-The goal of this project is to detect, crop, and read vehicle license plates using purely classical computer vision techniques (without deep learning detectors like YOLO or SSD).
+The goal of this project is to detect, crop, and read vehicle license plates using purely classical image processing, with no machine learning or deep learning of any kind (no CNNs, SVMs, Tesseract, or EasyOCR).
 
 ### Implementation Pipeline
 
@@ -51,7 +51,7 @@ Input Image ──> Grayscale ──> CLAHE ──> Denoising (Bilateral)
 ### 1. Requirements
 Ensure Python 3.8+ is installed with the following packages:
 ```bash
-pip install opencv-python-headless matplotlib numpy easyocr pytesseract pillow
+pip install opencv-python-headless matplotlib numpy pillow flask
 ```
 
 ### 2. Run Single Image Detection

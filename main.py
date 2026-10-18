@@ -16,11 +16,10 @@ IMAGE_DIR = "images"
 OUTPUT_DIR = "output"
 INDIAN_FORMAT = False            # True only for Indian plates like MH02AB1234
 USE_OCR = True                   # set False to only detect plates
-OCR_MODE = "easyocr"             # "easyocr" (deep learning, best on real photos), "tesseract", or "template" (pure classical)
-TESSERACT_PATH = r"C:\Program Files\Tesseract-OCR\tesseract.exe"
+OCR_MODE = "template"            # pure classical: segment chars + cv2.matchTemplate
 MAX_WIDTH = 1280                 # only shrink if image is wider than this
 PAD_X, PAD_Y = 0.6, 0.35         # extra margin around the character row when cropping the plate
-FONT_PATH = "C:/Windows/Fonts/arialbd.ttf"   # only used when OCR_MODE = "template"
+FONT_PATH = "C:/Windows/Fonts/arialbd.ttf"   # font for template rendering (Pillow, no ML)
 
 os.makedirs(OUTPUT_DIR, exist_ok=True)
 
@@ -264,68 +263,6 @@ def recognize(chars, templates):
     return text
 
 
-def _easy_variants(img):
-    """Several cleaned-up versions of the plate crop (grayscale)."""
-    g = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-    g = cv2.resize(g, None, fx=3, fy=3, interpolation=cv2.INTER_CUBIC)
-    clahe = cv2.createCLAHE(2.0, (4, 4)).apply(g)
-    soft = cv2.GaussianBlur(g, (0, 0), 2.0)
-    sharp = cv2.addWeighted(g, 1.8, soft, -0.8, 0)
-    _, otsu = cv2.threshold(cv2.GaussianBlur(g, (5, 5), 0), 0, 255,
-                            cv2.THRESH_BINARY + cv2.THRESH_OTSU)
-    if otsu.mean() < 110:
-        otsu = 255 - otsu
-    return [g, clahe, sharp, otsu]
-
-
-def ocr_easyocr(plate_img, reader, tight_img=None):
-    """
-    EasyOCR (deep learning) on several versions of the crop.
-    reader.recognize() reads the whole crop as ONE line (we already know where the plate is),
-    then the answer with the most total confidence across all versions wins.
-    """
-    allow = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
-    votes = {}
-    crops = [c for c in (tight_img, plate_img) if c is not None and c.size > 0]
-    for crop in crops:
-        for v in _easy_variants(crop):
-            try:
-                out = reader.recognize(v, allowlist=allow, detail=1)
-            except Exception:
-                continue
-            for item in out:
-                text = item[1].replace(" ", "")
-                conf = float(item[2])
-                if 4 <= len(text) <= 11:
-                    votes[text] = votes.get(text, 0.0) + conf
-    # also the normal detect+read path, sorted left to right
-    try:
-        g = cv2.resize(cv2.cvtColor(plate_img, cv2.COLOR_BGR2GRAY), None, fx=3, fy=3,
-                       interpolation=cv2.INTER_CUBIC)
-        res = sorted(reader.readtext(g, allowlist=allow, detail=1),
-                     key=lambda r: min(p[0] for p in r[0]))
-        text = "".join(r[1] for r in res).replace(" ", "")
-        if 4 <= len(text) <= 11 and res:
-            votes[text] = votes.get(text, 0.0) + sum(r[2] for r in res) / len(res)
-    except Exception:
-        pass
-    if not votes:
-        return ""
-    return max(votes, key=votes.get)
-
-
-def ocr_tesseract(plate_img):
-    """Reads the plate crop with Tesseract (note: Tesseract uses an LSTM neural network)."""
-    import pytesseract
-    if os.path.exists(TESSERACT_PATH):
-        pytesseract.pytesseract.tesseract_cmd = TESSERACT_PATH
-    g = cv2.cvtColor(plate_img, cv2.COLOR_BGR2GRAY)
-    g = cv2.resize(g, None, fx=4, fy=4, interpolation=cv2.INTER_CUBIC)
-    g = cv2.createCLAHE(2.0, (4, 4)).apply(g)
-    _, bw = cv2.threshold(cv2.GaussianBlur(g, (5, 5), 0), 0, 255,
-                          cv2.THRESH_BINARY + cv2.THRESH_OTSU)
-    cfg = "--psm 7 -c tessedit_char_whitelist=ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
-    return pytesseract.image_to_string(bw, config=cfg).strip()
 
 
 def fix_indian(text):
@@ -383,33 +320,15 @@ def main():
         print("No images found in", IMAGE_DIR)
         return
 
-    # ---- choose the OCR engine (falls back easyocr -> tesseract -> template)
-    mode = OCR_MODE if USE_OCR else None
+    # ---- classical-only OCR: cv2.matchTemplate against rendered font templates
     templates = None
-    reader = None
-    if mode == "easyocr":
-        try:
-            import easyocr
-            print("Loading EasyOCR (first run downloads the model, needs internet)...")
-            reader = easyocr.Reader(["en"], gpu=False, verbose=False)
-        except Exception as e:
-            print("EasyOCR not available, trying Tesseract:", e)
-            mode = "tesseract"
-    if mode == "tesseract":
-        try:
-            import pytesseract
-            if os.path.exists(TESSERACT_PATH):
-                pytesseract.pytesseract.tesseract_cmd = TESSERACT_PATH
-            pytesseract.get_tesseract_version()
-        except Exception as e:
-            print("Tesseract not available, using template matching instead:", e)
-            mode = "template"
-    if mode == "template":
+    mode = None
+    if USE_OCR:
         try:
             templates = build_templates()
+            mode = "template"
         except Exception as e:
             print("OCR disabled (font problem):", e)
-            mode = None
 
     print(f"OCR mode: {mode}")
     print(f"{'Image':30} {'Detected':10} OCR text")
@@ -428,11 +347,7 @@ def main():
         if res["plate"] is not None:
             found += 1
             try:
-                if mode == "easyocr":
-                    text = ocr_easyocr(res["plate"], reader, res.get("tight"))
-                elif mode == "tesseract":
-                    text = ocr_tesseract(res["plate"])
-                elif mode == "template":
+                if mode == "template" and templates:
                     text = recognize(segment_chars(res["plate"]), templates)
             except Exception as e:
                 text = ""

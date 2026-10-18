@@ -4,11 +4,8 @@ Run with:  python app.py
 Then open http://localhost:5000 in your browser.
 """
 import os
-import io
 import base64
-import tempfile
 import traceback
-import uuid
 import cv2
 import numpy as np
 
@@ -20,65 +17,24 @@ sys.path.insert(0, os.path.dirname(__file__))
 
 from main import (
     prepare, detect_plate,
-    ocr_easyocr, ocr_tesseract, segment_chars, recognize, build_templates,
+    segment_chars, recognize, build_templates,
     fix_indian,
-    OCR_MODE, USE_OCR, INDIAN_FORMAT, TESSERACT_PATH
+    USE_OCR, INDIAN_FORMAT
 )
 
 app = Flask(__name__, static_folder="frontend", static_url_path="")
 
-# ── initialise OCR engine once at startup ──────────────────────────────────
-_reader = None
+# ── initialise classical template OCR once at startup ─────────────────────
 _templates = None
-_ocr_mode = None
+_ocr_active = False
 
-
-def _init_ocr():
-    global _reader, _templates, _ocr_mode
-    if _ocr_mode is not None:
-        return
-
-    if not USE_OCR:
-        _ocr_mode = None
-        return
-
-    mode = OCR_MODE
-    if mode == "easyocr":
-        try:
-            import easyocr
-            print("[ANPR] Loading EasyOCR ...")
-            _reader = easyocr.Reader(["en"], gpu=False, verbose=False)
-            _ocr_mode = "easyocr"
-            print("[ANPR] EasyOCR ready.")
-            return
-        except Exception as e:
-            print(f"[ANPR] EasyOCR unavailable ({e}), trying Tesseract ...")
-            mode = "tesseract"
-
-    if mode == "tesseract":
-        try:
-            import pytesseract
-            if os.path.exists(TESSERACT_PATH):
-                pytesseract.pytesseract.tesseract_cmd = TESSERACT_PATH
-            pytesseract.get_tesseract_version()
-            _ocr_mode = "tesseract"
-            print("[ANPR] Tesseract ready.")
-            return
-        except Exception as e:
-            print(f"[ANPR] Tesseract unavailable ({e}), using template matching ...")
-            mode = "template"
-
-    if mode == "template":
-        try:
-            _templates = build_templates()
-            _ocr_mode = "template"
-            print("[ANPR] Template matching ready.")
-        except Exception as e:
-            print(f"[ANPR] OCR completely disabled: {e}")
-            _ocr_mode = None
-
-
-_init_ocr()
+if USE_OCR:
+    try:
+        _templates = build_templates()
+        _ocr_active = True
+        print("[ANPR] Template matching OCR ready.")
+    except Exception as _e:
+        print(f"[ANPR] OCR disabled (font problem): {_e}")
 
 
 # ── helpers ────────────────────────────────────────────────────────────────
@@ -149,11 +105,7 @@ def process():
         if detected:
             plate_uri = _encode_img(res["plate"])
             try:
-                if _ocr_mode == "easyocr":
-                    text = ocr_easyocr(res["plate"], _reader, res.get("tight"))
-                elif _ocr_mode == "tesseract":
-                    text = ocr_tesseract(res["plate"])
-                elif _ocr_mode == "template" and _templates:
+                if _ocr_active and _templates:
                     text = recognize(segment_chars(res["plate"]), _templates)
             except Exception as e:
                 text = ""
@@ -167,7 +119,7 @@ def process():
         return jsonify({
             "detected": detected,
             "plate_text": text,
-            "ocr_engine": _ocr_mode or "none",
+            "ocr_engine": "template" if _ocr_active else "none",
             "plate_image": plate_uri,
             "stages": stages,
         })
