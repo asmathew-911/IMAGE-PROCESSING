@@ -261,7 +261,19 @@ def build_templates():
         "C:/Windows/Fonts/arialn.ttf", "C:/Windows/Fonts/verdana.ttf",
         "C:/Windows/Fonts/courbd.ttf", "C:/Windows/Fonts/times.ttf",
         "C:/Windows/Fonts/impact.ttf", "C:/Windows/Fonts/consola.ttf",
+        "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
+        "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+        "/usr/share/fonts/truetype/freefont/FreeSansBold.ttf",
+        "/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf",
     ]
+    try:
+        from matplotlib import font_manager
+        mp_font = font_manager.findfont(font_manager.FontProperties(family="sans-serif"))
+        if mp_font and mp_font not in font_paths:
+            font_paths.append(mp_font)
+    except Exception:
+        pass
+
     fonts = []
     for fp in font_paths:
         try:
