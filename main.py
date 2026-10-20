@@ -32,7 +32,7 @@ import matplotlib.pyplot as plt
 IMAGE_DIR     = "images"
 OUTPUT_DIR    = "output"
 MAX_WIDTH     = 1280
-INDIAN_FORMAT = False
+INDIAN_FORMAT = True
 USE_OCR       = True
 FONT_PATH     = "C:/Windows/Fonts/arialbd.ttf"
 
@@ -584,7 +584,43 @@ def _match_one(cell_info, templates, tmpl_hu_cache):
     return best_ch, best_sc
 
 
+INDIAN_PATTERN = ["L", "L", "D", "D", "L", "L", "D", "D", "D", "D"]
+
+
 def recognize(chars, templates, tmpl_hu_cache):
+    if not chars:
+        return ""
+
+    # If Indian format is active and we have candidate characters:
+    if INDIAN_FORMAT and len(chars) >= 10:
+        if len(chars) == 10:
+            text = ""
+            for i, cell in enumerate(chars):
+                exp = INDIAN_PATTERN[i]
+                allowed = string.ascii_uppercase if exp == "L" else string.digits
+                sub_tmpls = {k: v for k, v in templates.items() if k in allowed}
+                ch, sc = _match_one(cell, sub_tmpls, tmpl_hu_cache)
+                text += ch if sc >= 0.18 else "?"
+            return text
+        else:
+            # More than 10 detected (rivets/artifacts): select best 10 aligned subset
+            best_text, best_sc = "", -1
+            for offset in range(len(chars) - 9):
+                cand = chars[offset: offset + 10]
+                cand_text = ""
+                total_sc = 0.0
+                for i, cell in enumerate(cand):
+                    exp = INDIAN_PATTERN[i]
+                    allowed = string.ascii_uppercase if exp == "L" else string.digits
+                    sub_tmpls = {k: v for k, v in templates.items() if k in allowed}
+                    ch, sc = _match_one(cell, sub_tmpls, tmpl_hu_cache)
+                    cand_text += ch if sc >= 0.18 else "?"
+                    total_sc += sc
+                if total_sc > best_sc:
+                    best_sc = total_sc
+                    best_text = cand_text
+            return best_text
+
     text = ""
     for cell in chars:
         ch, sc = _match_one(cell, templates, tmpl_hu_cache)
@@ -621,22 +657,72 @@ def ocr_plate(plate_bgr, templates, tmpl_hu_cache=None):
 
 
 # ================================================================ POST-CORRECTION
-_DIGIT_LIKE  = {"O": "0", "I": "1", "J": "1", "B": "8",
-                "S": "5", "Z": "2", "G": "6", "Q": "0"}
-_LETTER_LIKE = {"0": "O", "1": "I", "8": "B", "5": "S",
-                "2": "Z", "6": "G"}
+_DIGIT_MAP = {
+    "O": "0", "D": "0", "Q": "0", "U": "0",
+    "I": "1", "J": "1", "L": "1", "T": "7",
+    "Z": "2",
+    "E": "3",
+    "A": "4",
+    "S": "5",
+    "G": "6", "C": "0",
+    "B": "8", "R": "8",
+    "P": "9", "Y": "7", "V": "7"
+}
+
+_LETTER_MAP = {
+    "0": "O",
+    "1": "I",
+    "2": "Z",
+    "3": "E",
+    "4": "A",
+    "5": "S",
+    "6": "G",
+    "7": "T",
+    "8": "B",
+    "9": "P"
+}
 
 
 def fix_indian(text):
-    if len(text) != 10:
+    """
+    Enforces standard Indian license plate format:
+    2 Letters (State), 2 Numbers (RTO), 2 Letters (Series), 4 Numbers (Unique ID)
+    Format: LL NN LL NNNN (e.g., MH 20 CS 1941)
+    """
+    if not text:
         return text
-    out = ""
-    for i, ch in enumerate(text):
-        if i in (2, 3, 6, 7, 8, 9):
-            out += _DIGIT_LIKE.get(ch, ch)
+
+    # Extract all alphanumeric characters
+    cleaned = [c for c in text.upper() if c.isalnum() or c == "?"]
+    if not cleaned:
+        return text
+
+    pattern = ["L", "L", "N", "N", "L", "L", "N", "N", "N", "N"]
+    chars_to_fix = cleaned[:10]
+    out = []
+    for i, ch in enumerate(chars_to_fix):
+        exp = pattern[i] if i < len(pattern) else "N"
+        if ch == "?":
+            out.append(ch)
+        elif exp == "L":
+            # Must be letter
+            out.append(_LETTER_MAP.get(ch, "A") if ch.isdigit() else ch)
         else:
-            out += _LETTER_LIKE.get(ch, ch)
-    return out
+            # Must be number
+            out.append(_DIGIT_MAP.get(ch, "0") if ch.isalpha() else ch)
+
+    res = "".join(out)
+    # Format with standard spaces: LL NN LL NNNN
+    if len(res) == 10:
+        return f"{res[0:2]} {res[2:4]} {res[4:6]} {res[6:10]}"
+    elif len(res) >= 6:
+        parts = []
+        if len(res) >= 2: parts.append(res[0:2])
+        if len(res) >= 4: parts.append(res[2:4])
+        if len(res) >= 6: parts.append(res[4:6])
+        if len(res) > 6:  parts.append(res[6:])
+        return " ".join(parts)
+    return res
 
 
 # ================================================================ OUTPUT
