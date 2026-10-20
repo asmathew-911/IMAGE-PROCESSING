@@ -250,61 +250,76 @@ def detect_plate(img):
 # ================================================================ OCR TEMPLATES
 def build_templates():
     """
-    Render A-Z and 0-9 in multiple Windows system fonts, then create
-    morphological variants (erode / dilate / blur).
+    Render A-Z and 0-9 using:
+    1. Built-in OpenCV Hershey vector fonts (100% OS-independent, renders on any OS/Cloud)
+    2. Matplotlib bundled TrueType fonts (DejaVuSans shipped inside matplotlib wheel)
+    3. System TrueType fonts if available (Windows / Linux)
+    Creates morphological variants (erode / dilate / blur).
     Returns dict[char] -> list[np.ndarray uint8 CHAR_W x CHAR_H].
     """
     from PIL import Image, ImageDraw, ImageFont
 
-    font_paths = [
-        FONT_PATH, "C:/Windows/Fonts/arial.ttf",
-        "C:/Windows/Fonts/arialn.ttf", "C:/Windows/Fonts/verdana.ttf",
-        "C:/Windows/Fonts/courbd.ttf", "C:/Windows/Fonts/times.ttf",
-        "C:/Windows/Fonts/impact.ttf", "C:/Windows/Fonts/consola.ttf",
-        "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
-        "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
-        "/usr/share/fonts/truetype/freefont/FreeSansBold.ttf",
-        "/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf",
+    templates = {ch: [] for ch in string.ascii_uppercase + string.digits}
+    k_e = cv2.getStructuringElement(cv2.MORPH_RECT, (2, 2))
+    k_d = cv2.getStructuringElement(cv2.MORPH_RECT, (2, 2))
+
+    # 1. OpenCV built-in Hershey fonts (vector fonts compiled into OpenCV)
+    cv_font_configs = [
+        (cv2.FONT_HERSHEY_SIMPLEX, 2.1, 4),
+        (cv2.FONT_HERSHEY_DUPLEX,  2.1, 4),
+        (cv2.FONT_HERSHEY_COMPLEX, 2.1, 4),
+        (cv2.FONT_HERSHEY_TRIPLEX, 2.1, 4),
     ]
-    try:
-        from matplotlib import font_manager
-        mp_font = font_manager.findfont(font_manager.FontProperties(family="sans-serif"))
-        if mp_font and mp_font not in font_paths:
-            font_paths.append(mp_font)
-    except Exception:
-        pass
-
-    fonts = []
-    for fp in font_paths:
-        try:
-            fonts.append(ImageFont.truetype(fp, 80))
-        except Exception:
-            pass
-    if not fonts:
-        fonts = [ImageFont.load_default()]
-
-    k_e = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (2, 2))
-    k_d = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (2, 2))
-
-    templates = {}
-    for ch in string.ascii_uppercase + string.digits:
-        variants = []
-        for font in fonts:
-            im  = Image.new("L", (130, 140), 0)
-            ImageDraw.Draw(im).text((15, 10), ch, fill=255, font=font)
-            arr = np.array(im)
-            ys, xs = np.where(arr > 20)
+    for face, scale, thick in cv_font_configs:
+        for ch in templates.keys():
+            canvas = np.zeros((140, 120), dtype=np.uint8)
+            (tw, th), _ = cv2.getTextSize(ch, face, scale, thick)
+            x = max(5, (120 - tw) // 2)
+            y = max(th + 5, (140 + th) // 2)
+            cv2.putText(canvas, ch, (x, y), face, scale, 255, thick, cv2.LINE_AA)
+            ys, xs = np.where(canvas > 30)
             if len(ys) == 0:
                 continue
-            arr  = arr[ys.min():ys.max()+1, xs.min():xs.max()+1]
-            base = cv2.resize(arr, (CHAR_W, CHAR_H))
-            variants.append(base)
-            variants.append(cv2.erode(base,  k_e, iterations=1))
-            variants.append(cv2.dilate(base, k_d, iterations=1))
-            variants.append(cv2.GaussianBlur(base, (3, 3), 1))
-            variants.append(cv2.dilate(base, k_d, iterations=2))
-        if variants:
-            templates[ch] = variants
+            crop = canvas[ys.min():ys.max()+1, xs.min():xs.max()+1]
+            base = cv2.resize(crop, (CHAR_W, CHAR_H), interpolation=cv2.INTER_AREA)
+            templates[ch].append(base)
+            templates[ch].append(cv2.erode(base, k_e, iterations=1))
+            templates[ch].append(cv2.dilate(base, k_d, iterations=1))
+
+    # 2. Matplotlib bundled fonts (cross-platform, reliable on Render / Linux)
+    mpl_ttf = os.path.join(matplotlib.get_data_path(), "fonts", "ttf")
+    ttfs = []
+    if os.path.exists(mpl_ttf):
+        for name in ["DejaVuSans-Bold.ttf", "DejaVuSans.ttf", "DejaVuSansMono-Bold.ttf"]:
+            p = os.path.join(mpl_ttf, name)
+            if os.path.exists(p):
+                ttfs.append(p)
+
+    # 3. System font paths (Windows & Linux)
+    for p in [FONT_PATH, "C:/Windows/Fonts/arialbd.ttf", "C:/Windows/Fonts/arial.ttf",
+              "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
+              "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"]:
+        if os.path.exists(p) and p not in ttfs:
+            ttfs.append(p)
+
+    for ttf in ttfs:
+        try:
+            fnt = ImageFont.truetype(ttf, 75)
+            for ch in templates.keys():
+                im = Image.new("L", (130, 140), 0)
+                ImageDraw.Draw(im).text((15, 10), ch, fill=255, font=fnt)
+                arr = np.array(im)
+                ys, xs = np.where(arr > 30)
+                if len(ys) == 0:
+                    continue
+                crop = arr[ys.min():ys.max()+1, xs.min():xs.max()+1]
+                base = cv2.resize(crop, (CHAR_W, CHAR_H), interpolation=cv2.INTER_AREA)
+                templates[ch].append(base)
+                templates[ch].append(cv2.erode(base, k_e, iterations=1))
+                templates[ch].append(cv2.dilate(base, k_d, iterations=1))
+        except Exception:
+            pass
+
     return templates
 
 
@@ -330,89 +345,75 @@ def normalise_plate(plate_bgr):
     """
     BGR plate crop -> clean binary image at PLATE_W x PLATE_H.
 
-    Pipeline:
-      1. Grayscale + trim frame
-      2. Deskew (Hough angle correction)
-      3. Resize to PLATE_W x PLATE_H
-      4. Percentile contrast stretch (2nd-98th)
-      5. Unsharp mask sharpening
-      6. Multi-strategy binarisation:
-           - Otsu at blur sigma 0,1,2,3,4 (both polarities)
-           - Adaptive at block 19 and 31 (both polarities)
-         -> pick whichever produces the most character-shaped blobs
-      7. Morphological open (remove specks) + close (fill gaps)
-      8. Row-profile crop to isolate character band
+    Classical CV Pipeline:
+      1. Trim outer perimeter margins (removes vehicle bumper/bracket noise)
+      2. Deskew (Hough transform angle estimation & affine rotation)
+      3. Resize to canonical PLATE_W x PLATE_H (520 x 110)
+      4. CLAHE local contrast enhancement & unsharp masking
+      5. Multi-candidate binarisation (Otsu & Adaptive Gaussian)
+      6. Polarity normalisation (ensures white characters on black background)
+      7. Border margin suppression & morphological opening
     """
-    g = cv2.cvtColor(plate_bgr, cv2.COLOR_BGR2GRAY)
-    h0, w0 = g.shape
-    g = g[int(0.07*h0): int(0.93*h0), int(0.03*w0): int(0.97*w0)]
-    if g.size == 0:
+    if plate_bgr is None or plate_bgr.size == 0:
         return None
+    h0, w0 = plate_bgr.shape[:2]
+    # Trim outer margin to discard mounting frames and vehicle bumper borders
+    trim = plate_bgr[int(0.06 * h0): int(0.94 * h0), int(0.02 * w0): int(0.98 * w0)]
+    if trim.size == 0:
+        trim = plate_bgr
 
+    g = cv2.cvtColor(trim, cv2.COLOR_BGR2GRAY)
     g = deskew_plate(g)
     g = cv2.resize(g, (PLATE_W, PLATE_H), interpolation=cv2.INTER_CUBIC)
 
-    lo, hi = np.percentile(g, 2), np.percentile(g, 98)
-    if hi > lo:
-        g = np.clip((g.astype(np.float32) - lo) / (hi - lo) * 255,
-                    0, 255).astype(np.uint8)
-
+    # Contrast enhancement & sharpening
+    clahe = cv2.createCLAHE(clipLimit=3.0, tileGridSize=(8, 8))
+    g = clahe.apply(g)
     blur_s = cv2.GaussianBlur(g, (0, 0), 1.5)
     g = cv2.addWeighted(g, 1.8, blur_s, -0.8, 0)
     g = np.clip(g, 0, 255).astype(np.uint8)
 
-    # -- score function: count character-like blobs --
-    def _score(bw):
-        bw2 = bw.copy()
-        bw2[:4, :] = 0; bw2[-4:, :] = 0; bw2[:, :4] = 0; bw2[:, -4:] = 0
-        cnts, _ = cv2.findContours(bw2, cv2.RETR_EXTERNAL,
-                                   cv2.CHAIN_APPROX_SIMPLE)
+    cands = []
+    # 1. Otsu thresholding across multiple Gaussian smoothing levels
+    for sigma in (0, 1, 2):
+        bg = g if sigma == 0 else cv2.GaussianBlur(g, (sigma * 2 + 1, sigma * 2 + 1), sigma)
+        _, bwn = cv2.threshold(bg, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+        # Check border polarity: if borders are predominantly white, plate has white bg -> invert
+        b_mean = (np.mean(bwn[:4, :]) + np.mean(bwn[-4:, :]) + np.mean(bwn[:, :4]) + np.mean(bwn[:, -4:])) / 4.0
+        if b_mean > 120:
+            bwn = cv2.bitwise_not(bwn)
+        cands.append(bwn)
+
+    # 2. Adaptive Gaussian thresholding across multiple window sizes
+    for bs in (19, 31, 45):
+        for pol in (cv2.THRESH_BINARY, cv2.THRESH_BINARY_INV):
+            bwa = cv2.adaptiveThreshold(g, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, pol, bs, 7)
+            b_mean = (np.mean(bwa[:4, :]) + np.mean(bwa[-4:, :]) + np.mean(bwa[:, :4]) + np.mean(bwa[:, -4:])) / 4.0
+            if b_mean > 120:
+                bwa = cv2.bitwise_not(bwa)
+            cands.append(bwa)
+
+    # Rank candidates by number of character-like connected components
+    best_bw, best_score = cands[0], -1
+    for bw in cands:
+        bw_clean = bw.copy()
+        bw_clean[:4, :] = 0; bw_clean[-4:, :] = 0; bw_clean[:, :4] = 0; bw_clean[:, -4:] = 0
+        cnts, _ = cv2.findContours(bw_clean, cv2.RETR_CCOMP, cv2.CHAIN_APPROX_SIMPLE)
         good = 0
         for c in cnts:
             x, y, w, h = cv2.boundingRect(c)
-            if (PLATE_H * 0.28 < h < PLATE_H * 0.95
-                    and 0.12 < w / h < 1.15
-                    and cv2.contourArea(c) > 0.15 * w * h):
+            if (PLATE_H * 0.25 < h < PLATE_H * 0.95 and 6 < w < PLATE_H * 1.1 and 0.12 < w / h < 1.2):
                 good += 1
-        return good
+        if good > best_score:
+            best_score = good
+            best_bw = bw_clean
 
-    cands = []
-    # Otsu at multiple blur levels
-    for sigma in (0, 1, 2, 3, 4):
-        blurred = g if sigma == 0 else cv2.GaussianBlur(g, (sigma*2+1, sigma*2+1), sigma)
-        _, bwn = cv2.threshold(blurred, 0, 255,
-                               cv2.THRESH_BINARY + cv2.THRESH_OTSU)
-        bwi = cv2.bitwise_not(bwn)
-        cands.append((_score(bwn), bwn))
-        cands.append((_score(bwi), bwi))
+    # Clear border margin to disconnect any bezel frame remnants
+    best_bw[:3, :] = 0; best_bw[-3:, :] = 0; best_bw[:, :3] = 0; best_bw[:, -3:] = 0
 
-    # Adaptive at two block sizes
-    for bs in (19, 31, 51):
-        for pol in (cv2.THRESH_BINARY, cv2.THRESH_BINARY_INV):
-            bwa = cv2.adaptiveThreshold(g, 255,
-                                        cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
-                                        pol, bs, 8)
-            cands.append((_score(bwa), bwa))
-
-    cands.sort(key=lambda t: t[0], reverse=True)
-    best_bw = cands[0][1]
-
-    # morphological cleanup
+    # Morphological opening (removes 1-2 pixel isolated salt-and-pepper noise)
     ko = cv2.getStructuringElement(cv2.MORPH_RECT, (2, 2))
-    kc = cv2.getStructuringElement(cv2.MORPH_RECT, (3, 3))
-    best_bw = cv2.morphologyEx(best_bw, cv2.MORPH_OPEN,  ko, iterations=1)
-    best_bw = cv2.morphologyEx(best_bw, cv2.MORPH_CLOSE, kc, iterations=1)
-
-    # row-profile crop: keep only the character band
-    rsum = best_bw.sum(axis=1).astype(np.float32)
-    rsm  = np.convolve(rsum, np.ones(5) / 5, mode="same")
-    thr  = 0.20 * rsm.max() if rsm.max() > 0 else 1
-    ink  = np.where(rsm > thr)[0]
-    if len(ink) >= 4:
-        r0 = max(0, ink[0] - 2)
-        r1 = min(best_bw.shape[0], ink[-1] + 3)
-        best_bw = best_bw[r0:r1, :]
-
+    best_bw = cv2.morphologyEx(best_bw, cv2.MORPH_OPEN, ko, iterations=1)
     return best_bw
 
 
@@ -421,7 +422,7 @@ def segment_chars_projection(bw):
     """Vertical projection profile -> column boundaries -> char cells."""
     row_sum = bw.sum(axis=1).astype(np.float32)
     rsm     = np.convolve(row_sum, np.ones(5) / 5, mode="same")
-    ink_rows = np.where(rsm > 0.15 * rsm.max())[0]
+    ink_rows = np.where(rsm > 0.12 * rsm.max())[0] if rsm.max() > 0 else []
     if len(ink_rows) == 0:
         return []
     band = bw[ink_rows[0]: ink_rows[-1] + 1, :]
@@ -430,7 +431,7 @@ def segment_chars_projection(bw):
 
     col_sum = band.sum(axis=0).astype(np.float32)
     csm     = np.convolve(col_sum, np.ones(3) / 3, mode="same")
-    ink_t   = 0.08 * csm.max()
+    ink_t   = 0.08 * csm.max() if csm.max() > 0 else 1
 
     in_ch, segs, start = False, [], 0
     for c in range(len(csm)):
@@ -441,7 +442,7 @@ def segment_chars_projection(bw):
     if in_ch:
         segs.append((start, len(csm)))
 
-    # merge narrow splits
+    # Merge narrow splits
     merged = []
     for s in segs:
         if merged and s[0] - merged[-1][1] < 4:
@@ -451,62 +452,135 @@ def segment_chars_projection(bw):
 
     h_band = band.shape[0]
     valid = [(c0, c1) for c0, c1 in merged
-             if c1 - c0 >= 3 and 0.10 < (c1 - c0) / h_band < 1.3]
+             if c1 - c0 >= 4 and 0.10 < (c1 - c0) / float(h_band) < 1.35]
     if not valid:
         return []
-    return [cv2.resize(band[:, c0:c1], (CHAR_W, CHAR_H),
-                       interpolation=cv2.INTER_AREA) for c0, c1 in valid]
+
+    res = []
+    for c0, c1 in valid:
+        patch = band[:, c0:c1]
+        aspect = (c1 - c0) / float(h_band)
+        pad_x = max(1, int(0.08 * (c1 - c0)))
+        pad_y = max(1, int(0.08 * h_band))
+        padded = cv2.copyMakeBorder(patch, pad_y, pad_y, pad_x, pad_x, cv2.BORDER_CONSTANT, value=0)
+        cell = cv2.resize(padded, (CHAR_W, CHAR_H), interpolation=cv2.INTER_AREA)
+        res.append((cell, aspect))
+    return res
 
 
 def segment_chars_contour(bw):
-    """Fallback: connected-component bounding boxes."""
-    cnts, _ = cv2.findContours(bw, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-    H = bw.shape[0]
-    boxes = [(cv2.boundingRect(c)) for c in cnts]
-    boxes = [(x, y, w, h) for x, y, w, h in boxes
-             if H * 0.20 < h < H * 0.95 and w > 4
-             and 0.12 < w / h < 1.2 and cv2.contourArea(
-                 cnts[boxes.index((x,y,w,h))] if (x,y,w,h) in boxes else cnts[0]
-             ) > 0.15 * w * h]
-    # Simpler approach - refilter properly
-    boxes = []
+    """
+    Connected-component character segmentation with hierarchy filtering:
+    - RETR_CCOMP retrieves external letters and enclosed holes.
+    - Suppresses duplicate/nested inner contours.
+    - Mask isolation separates adjacent touches and lines.
+    - Preserves aspect ratio for geometric matching.
+    """
+    H, W = bw.shape
+    cnts, hier = cv2.findContours(bw.copy(), cv2.RETR_CCOMP, cv2.CHAIN_APPROX_SIMPLE)
+    if not cnts:
+        return []
+
+    valid = []
     for c in cnts:
         x, y, w, h = cv2.boundingRect(c)
-        if (H * 0.20 < h < H * 0.95 and w > 4
-                and 0.12 < w / h < 1.2
-                and cv2.contourArea(c) > 0.15 * w * h):
-            boxes.append((x, y, w, h))
-    boxes.sort(key=lambda b: b[0])
-    if not boxes:
+        aspect = w / float(h)
+        area = cv2.contourArea(c)
+        if (0.22 * H < h < 0.96 * H and
+            5 < w < 0.30 * W and
+            0.10 < aspect < 1.30 and
+            area > 0.08 * w * h):
+            valid.append((x, y, w, h, c, aspect))
+
+    if not valid:
         return []
-    return [cv2.resize(bw[y:y+h, x:x+w], (CHAR_W, CHAR_H))
-            for x, y, w, h in boxes]
+
+    # Sort by area descending for non-maximum suppression of nested holes
+    valid.sort(key=lambda b: b[2] * b[3], reverse=True)
+    kept = []
+    for b in valid:
+        bx, by, bw_, bh_, bc, basp = b
+        overlap = False
+        for kx, ky, kw, kh, _, _ in kept:
+            if bx >= kx - 2 and by >= ky - 2 and (bx + bw_) <= (kx + kw + 2) and (by + bh_) <= (ky + kh + 2):
+                overlap = True
+                break
+        if not overlap:
+            kept.append(b)
+
+    # Sort strictly left to right
+    kept.sort(key=lambda b: b[0])
+
+    char_cells = []
+    for x, y, w, h, c, aspect in kept:
+        cell_mask = np.zeros(bw.shape, dtype=np.uint8)
+        cv2.drawContours(cell_mask, [c], -1, 255, -1)
+        isolated = cv2.bitwise_and(bw, bw, mask=cell_mask)[y:y+h, x:x+w]
+
+        pad_y = max(1, int(0.08 * h))
+        pad_x = max(1, int(0.08 * w))
+        isolated = cv2.copyMakeBorder(isolated, pad_y, pad_y, pad_x, pad_x,
+                                      cv2.BORDER_CONSTANT, value=0)
+        cell = cv2.resize(isolated, (CHAR_W, CHAR_H), interpolation=cv2.INTER_AREA)
+        char_cells.append((cell, aspect))
+
+    return char_cells
 
 
 # ================================================================ CHARACTER MATCHING
-def _match_one(cell, templates, tmpl_hu_cache):
+def _match_one(cell_info, templates, tmpl_hu_cache):
     """
-    Hybrid matcher: template matching (pixel) + Hu moments (shape).
-    60% template-match score + 40% Hu-moment similarity.
+    Hybrid classical matcher:
+      1. Normalized Cross-Correlation (TM_CCOEFF_NORMED)
+      2. Jaccard Index (IoU) overlap to strictly penalize missing/extra strokes
+      3. Hu Moments shape descriptors
+      4. Geometric aspect ratio penalty (e.g. 'I'/'1' cannot be wide)
     """
-    cell_bw = (cell > 50).astype(np.uint8) * 255
-    cell_hu = _hu(cell_bw)
+    if isinstance(cell_info, tuple):
+        cell, box_aspect = cell_info
+    else:
+        cell, box_aspect = cell_info, 0.50
+
+    cell_bin = (cell > 50).astype(np.uint8)
+    if cell_bin.sum() < 30:
+        return "?", 0.0
+
+    cell_hu = _hu(cell_bin * 255)
     cell_f  = cell.astype(np.float32)
 
     best_ch, best_sc = "?", -1.0
     for ch, variants in templates.items():
         hu_list = tmpl_hu_cache.get(ch, [])
         for idx, tmpl in enumerate(variants):
-            tm_sc = cv2.matchTemplate(cell_f, tmpl.astype(np.float32),
-                                      cv2.TM_CCOEFF_NORMED)[0][0]
+            # 1. Pearson correlation
+            res = cv2.matchTemplate(cell_f, tmpl.astype(np.float32), cv2.TM_CCOEFF_NORMED)[0][0]
+            tm_sc = float(res) if not np.isnan(res) else 0.0
+
+            # 2. IoU / Jaccard pixel overlap
+            tmpl_bin = (tmpl > 50).astype(np.uint8)
+            inter = np.logical_and(cell_bin, tmpl_bin).sum()
+            union = np.logical_or(cell_bin, tmpl_bin).sum()
+            iou = inter / float(union) if union > 0 else 0.0
+
+            # 3. Hu moment shape similarity
             if idx < len(hu_list):
                 hu_dist = np.linalg.norm(cell_hu - hu_list[idx])
                 hu_sim  = 1.0 / (1.0 + hu_dist / 3.0)
             else:
                 hu_sim = 0.3
-            combined = 0.60 * tm_sc + 0.40 * hu_sim
+
+            # Combined score
+            combined = 0.45 * max(0.0, tm_sc) + 0.40 * iou + 0.15 * hu_sim
+
+            # Aspect ratio geometric filter
+            if ch in ("I", "1") and box_aspect > 0.48:
+                combined *= 0.40
+            elif ch in ("W", "M", "Q", "O", "0") and box_aspect < 0.28:
+                combined *= 0.40
+
             if combined > best_sc:
                 best_sc, best_ch = combined, ch
+
     return best_ch, best_sc
 
 
@@ -533,12 +607,10 @@ def ocr_plate(plate_bgr, templates, tmpl_hu_cache=None):
     if bw is None:
         return "", None
 
-    # projection first, contour fallback
-    chars = segment_chars_projection(bw)
-    if len(chars) < 3:
-        chars_c = segment_chars_contour(bw)
-        if len(chars_c) >= len(chars):
-            chars = chars_c
+    # Dual-strategy character segmentation: pick strategy yielding cleaner character set
+    chars_p = segment_chars_projection(bw)
+    chars_c = segment_chars_contour(bw)
+    chars = chars_c if len(chars_c) >= len(chars_p) else chars_p
 
     if not chars:
         return "", bw
